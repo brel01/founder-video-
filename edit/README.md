@@ -42,3 +42,12 @@ All timings live in `TIMELINE`, `CAPTIONS` and the scene functions in `render.py
 - **Palette:** black `#000000`, Urbn Blue `#253DE2` and white, with Success `#12B76A` used only for the confirmation chips. The logo is never rotated, flipped or given effects.
 - **Music and SFX** are original and synthesized in code (`audio.py`), so there are no licensing issues. Swapping in a licensed track is a one-line change in `main()`.
 - **Voice:** high-pass, light FFT denoise, de-box EQ, presence lift, de-esser and gentle compression. The music ducks about 6 dB under speech.
+
+## Thumbnails
+
+`python3 edit/thumbnail.py` writes:
+
+- `output/thumbnail_9x16.png` (1080×1920): cover for Reels, TikTok and Shorts. The key content sits inside the centre 4:5 crop used by profile grids.
+- `output/thumbnail_16x9.png` (1280×720): for YouTube, LinkedIn and X.
+
+Both thumbnails lead with the film's hook question. The founder cutouts in `edit/assets/` were made from the original photos with an ISNet background-removal model.
