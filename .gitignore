@@ -1,0 +1,5 @@
+.DS_Store
+edit/video_only.mp4
+edit/mix*.wav
+edit/_voice.wav
+__pycache__/
