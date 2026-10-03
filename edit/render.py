@@ -6,6 +6,7 @@ screens and typography on top, and pipes frames to ffmpeg.
     python3 edit/render.py [out.mp4] [--from SEC --to SEC] [--still SEC out.png]
 """
 import glob
+import json
 import math
 import os
 import random
@@ -32,6 +33,11 @@ SUCCESS = (18, 183, 106)    # #12B76A
 OFFWHITE = (230, 230, 230)
 
 M = 90  # outer margin
+OFFSET = 0.85  # trim the dead air before the founder's first word
+
+# Instagram Reels safe zone (1080x1920): UI covers the top ~246 px, everything
+# below ~1535 px, and a button column right of x~886 from y~861 down.
+SAFE_TOP, SAFE_BOTTOM, SAFE_RIGHT = 250, 1535, 880
 
 
 # --------------------------------------------------------------------------- utils
@@ -370,16 +376,17 @@ def top_bar(c, t, t0, dark=True):
     """Guide-style header: wordmark, hairline, blue + grey squares."""
     p = ease_out(prog(t, t0, 0.7))
     logo = LOGO_W_SMALL if dark else LOGO_B_SMALL
-    paste(c, logo, M, 128, p)
+    y = 272
+    paste(c, logo, M, y, p)
     d = ImageDraw.Draw(c)
     x0, x1 = M + logo.width + 60, W - M - 110
     lc = (255, 255, 255, int(150 * p)) if dark else (37, 61, 226, int(255 * p))
-    d.line((x0, 156, x0 + (x1 - x0) * p, 156), fill=lc, width=2)
-    d.rectangle((W - M - 88, 137, W - M - 50, 175), fill=BLUE + (int(255 * p),))
-    d.rectangle((W - M - 38, 137, W - M, 175), fill=GREY + (int(255 * p),))
+    d.line((x0, y + 28, x0 + (x1 - x0) * p, y + 28), fill=lc, width=2)
+    d.rectangle((W - M - 88, y + 9, W - M - 50, y + 47), fill=BLUE + (int(255 * p),))
+    d.rectangle((W - M - 38, y + 9, W - M, y + 47), fill=GREY + (int(255 * p),))
 
 
-def bottom_rule(c, t, t0, dark=True, y=H - 170):
+def bottom_rule(c, t, t0, dark=True, y=1490):
     p = ease_out(prog(t, t0 + 0.2, 0.8))
     d = ImageDraw.Draw(c)
     d.rectangle((M, y - 19, M + 38, y + 19), fill=BLUE + (int(255 * p),))
@@ -418,6 +425,13 @@ class Footage:
 
 
 FACE = (540, 760)
+TRACK = json.load(open(os.path.join(ROOT, "edit", "assets", "face_track.json")))
+MED, CLOSE = 1.18, 1.36   # the only two framings used for the founder
+
+
+def face_at(t):
+    i = min(len(TRACK["eye"]) - 1, max(0, int(round(t * TRACK["fps"]))))
+    return TRACK["cx"][i], TRACK["eye"][i]
 
 
 def zoomed(img, z, cx=FACE[0], cy=FACE[1]):
@@ -427,119 +441,164 @@ def zoomed(img, z, cx=FACE[0], cy=FACE[1]):
     return img.resize((W, H), Image.BICUBIC, box=(x0, y0, x0 + w, y0 + h)).convert("RGBA")
 
 
-def founder(img, t, t0, z0, z1=None, dur=None, cx=FACE[0], cy=FACE[1]):
-    """Footage with a slow push from z0 toward z1 across the shot."""
+def founder(img, t, t0, z0, z1=None, dur=None):
+    """Founder footage framed on his eyes (upper third, same height in every
+    shot), with a slow push from z0 toward z1 anchored on the eyes."""
     if z1 is None:
-        z1 = z0 * 1.035
+        z1 = z0 * 1.03
     dur = dur or 4.0
     z = z0 + (z1 - z0) * ease_in_out(prog(t, t0, dur))
+    fx, eye = face_at(t)
+    eye_screen = 640 if z0 < 1.3 else 625
+    cy = eye - (eye_screen - H / 2) / z
+    cx = 540 + (fx - 540) * 0.85
     c = zoomed(img, z, cx, cy)
     c.alpha_composite(vignette())
     return c
 
 
 # --------------------------------------------------------------------------- captions
-CAPTIONS = [
-    (6.62, 9.0, "But when it comes to renting a house in Nigeria…", "renting a house"),
-    (16.30, 18.62, "I know this because I've gone through it.", "gone through it."),
-    (18.72, 21.62, "And that's when I started asking the bigger question.", "bigger question."),
-    (33.03, 35.55, "Property owners are juggling tenants,", "juggling"),
-    (35.66, 38.30, "managers, records and payments", None),
+CAPTIONS = [  # "|" marks a hand-set line break; lines are timed by length
+    (0.95, 2.95, "You can order food | from your phone.", "order food"),
+    (6.62, 9.0, "But when it comes to | renting a house in Nigeria…", "renting a house"),
+    (16.30, 18.62, "I know this because | I've gone through it.", "gone through it."),
+    (18.72, 21.62, "And that's when I started | asking the bigger question.", "bigger question."),
+    (33.03, 35.55, "Property owners are | juggling tenants,", "juggling"),
+    (35.66, 38.30, "managers, records | and payments", None),
     (38.36, 39.95, "across different places.", "different places."),
-    (40.07, 43.80, "And we keep trying to fix each problem separately.", "separately."),
-    (44.90, 47.95, "We think there's a bigger problem to solve first.", "first."),
-    (64.38, 68.22, "And eventually, your property is no longer just a building.", "no longer just a building."),
-    (73.50, 75.72, "That's what we're building at Urbn —", "Urbn"),
+    (40.07, 43.80, "And we keep trying to fix | each problem separately.", "separately."),
+    (44.90, 47.95, "We think there's a bigger | problem to solve first.", "first."),
+    (64.38, 68.22, "And eventually, | your property is no longer | just a building.", "just a building."),
+    (73.50, 75.72, "That's what we're | building at Urbn —", "Urbn"),
 ]
 
-CAP_SIZE = 56
-CAP_MAXW = W - 2 * M - 20
+CAP_SIZE = 58
+CAP_X = M
+CAP_MAXW = SAFE_RIGHT - M - 20
+CAP_Y = 1405   # every caption sits on this one line, inside the safe zone
+
+
+def _chunks():
+    """Split each caption into single lines that fit the safe width, timed by length."""
+    f = font(BODY, CAP_SIZE)
+    out = []
+    for s0, e0, text, hl in CAPTIONS:
+        if "|" in text:
+            parts = [x.strip().split(" ") for x in text.split("|")]
+            text = " ".join(" ".join(x) for x in parts)
+        else:
+            parts = None
+        words = text.split(" ")
+        hlw = set()
+        if hl:
+            hw = hl.split(" ")
+            for i in range(len(words) - len(hw) + 1):
+                if words[i:i + len(hw)] == hw:
+                    hlw = set(range(i, i + len(hw)))
+        if parts:
+            lines, k = [], 0
+            for x in parts:
+                lines.append(list(range(k, k + len(x))))
+                k += len(x)
+            n = None
+        # balanced line breaks: n lines of roughly equal width
+        full = f.getlength(text)
+        n = max(1, math.ceil(full / CAP_MAXW))
+        while not parts:
+            target = full / n
+            lines, cur = [], []
+            for i in range(len(words)):
+                trial = f.getlength(" ".join(words[j] for j in cur + [i]))
+                if cur and (trial > CAP_MAXW or (trial > target * 1.08 and len(lines) < n - 1)):
+                    lines.append(cur)
+                    cur = [i]
+                else:
+                    cur.append(i)
+            lines.append(cur)
+            if all(f.getlength(" ".join(words[j] for j in ln)) <= CAP_MAXW for ln in lines):
+                break
+            n += 1
+        total = sum(len(" ".join(words[i] for i in ln)) for ln in lines)
+        t = s0
+        for ln in lines:
+            n = len(" ".join(words[i] for i in ln))
+            dt = (e0 - s0) * n / total
+            out.append((t, t + dt, tuple(words[i] for i in ln), tuple(i in hlw for i in ln)))
+            t += dt
+    return out
 
 
 @lru_cache(None)
-def caption_img(text, hl):
+def caption_img(words, hls):
     f = font(BODY, CAP_SIZE)
-    words = text.split(" ")
-    hlw = set()
-    if hl:
-        hw = hl.split(" ")
-        for i in range(len(words) - len(hw) + 1):
-            if words[i:i + len(hw)] == hw:
-                hlw = set(range(i, i + len(hw)))
-    lines, cur = [], []
-    for i, w_ in enumerate(words):
-        trial = " ".join(words[j] for j in cur + [i])
-        if cur and f.getlength(trial) > CAP_MAXW:
-            lines.append(cur)
-            cur = [i]
-        else:
-            cur.append(i)
-    lines.append(cur)
     lh = int(CAP_SIZE * 1.42)
-    img = Image.new("RGBA", (W, lh * len(lines) + 40), (0, 0, 0, 0))
+    img = Image.new("RGBA", (W, lh + 40), (0, 0, 0, 0))
     shadow = Image.new("RGBA", img.size, (0, 0, 0, 0))
     d, ds = ImageDraw.Draw(img), ImageDraw.Draw(shadow)
-    sp = f.getlength(" ")
-    for li, line in enumerate(lines):
-        txt = " ".join(words[i] for i in line)
-        x = (W - f.getlength(txt)) / 2
-        y = 20 + li * lh
-        # highlight box spans contiguous highlighted words on this line
-        hl_idx = [i for i in line if i in hlw]
-        if hl_idx:
-            pre = " ".join(words[i] for i in line if i < hl_idx[0])
-            seg = " ".join(words[i] for i in hl_idx)
-            hx = x + (f.getlength(pre) + sp if pre else 0)
-            d.rectangle((hx - 12, y + 2, hx + f.getlength(seg) + 12, y + lh - 6), fill=BLUE + (255,))
-        ds.text((x, y + 6), txt, font=f, fill=(0, 0, 0, 200))
-        d.text((x, y + 4), txt, font=f, fill=WHITE + (255,))
+    txt = " ".join(words)
+    x, y = CAP_X, 20
+    if any(hls):
+        a = hls.index(True)
+        b = len(hls) - hls[::-1].index(True)
+        pre = " ".join(words[:a])
+        hx = x + (f.getlength(pre + " ") if pre else 0)
+        d.rectangle((hx - 12, y + 2, hx + f.getlength(" ".join(words[a:b])) + 12, y + lh - 6), fill=BLUE + (255,))
+    ds.text((x, y + 6), txt, font=f, fill=(0, 0, 0, 210))
+    d.text((x, y + 4), txt, font=f, fill=WHITE + (255,))
     shadow = shadow.filter(ImageFilter.GaussianBlur(8))
     shadow.alpha_composite(img)
     return shadow
 
 
-SHIRT_LOGO = (1185, 1250)  # source-frame y band of the urbn logo on the founder's T-shirt
+CAP_CHUNKS = None
 
 
-def caption_y(im, zooms, cy=FACE[1]):
-    """Place captions clear of the shirt logo for the shot's zoom range."""
-    if zooms is None:
-        return 1460
-    band = [(y - cy) * z + H / 2 for z in zooms for y in SHIRT_LOGO]
-    lo, hi = min(band), max(band)
-    hc = im.height - 20
-    if hi + 30 <= 1560:
-        return max(1400, hi + 30) - 20
-    return lo - 26 - hc - 20
+def draw_captions(c, t):
+    global CAP_CHUNKS
+    if CAP_CHUNKS is None:
+        CAP_CHUNKS = _chunks()
+    for s0, e0, words, hls in CAP_CHUNKS:
+        if s0 <= t < e0:
+            im = caption_img(words, hls)
+            p = ease_out(prog(t, s0, 0.12))
+            paste(c, im, 0, CAP_Y - 20 + (1 - p) * 10, p)
 
 
-def draw_captions(c, t, y=1460, zooms=None):
-    for s, e, text, hl in CAPTIONS:
-        if s - 0.06 <= t < e:
-            im = caption_img(text, hl)
-            if zooms is not None:
-                y = caption_y(im, zooms)
-            p = ease_out(prog(t, s - 0.06, 0.18))
-            paste(c, im, 0, y + (1 - p) * 14, p)
+def kicker(c, t, t0, text, y=SAFE_TOP + 30, dark=True):
+    d = ImageDraw.Draw(c)
+    pk = ease_out(prog(t, t0, 0.4))
+    d.rectangle((M, y + 6, M + 26, y + 32), fill=BLUE + (int(255 * pk),))
+    put_text(c, text, M + 46, y, 34, t, t0, WHITE if dark else BLACK, BODY, 0.12)
 
 
 # --------------------------------------------------------------------------- scenes
 def s_hook(t, img):
-    """0.0–6.6  Convenience montage: three brand cards, staccato."""
+    """0.85–6.62  Open on the founder's face, then two quick brand cards."""
+    if t < 2.95:
+        c = founder(img, t, OFFSET, MED, MED * 1.04, 2.1)
+        c.alpha_composite(grad_bottom(0.62, 0.7))
+        c.alpha_composite(grad_top(0.22, 0.6))
+        kicker(c, t, OFFSET, "WHY I'M BUILDING URBN")
+        bt = 1.75
+        if t >= bt:
+            b = check_badge("Order placed")
+            pb = ease_out(prog(t, bt, 0.35))
+            paste(c, scaled(b, 0.85 + 0.15 * pb), M, CAP_Y - 110 + (1 - pb) * 20, pb)
+        draw_captions(c, t)
+        return c
     cards = [
-        (0.0, 2.95, BLACK, (40, 40, 40), 1.0, "Order food", "from your phone.", "Order placed", WHITE, (150, 150, 150)),
         (2.95, 4.28, BLUE, (255, 255, 255), 0.13, "Send money", "in seconds.", "₦250,000 sent", WHITE, (205, 212, 255)),
         (4.28, 6.62, WHITE, (225, 225, 225), 1.0, "Book a flight", "without talking to anyone.", "Flight confirmed", BLACK, (110, 110, 110)),
     ]
     for i, (s, e, bg, wmc, wma, big, sub, badge, fg, subc) in enumerate(cards):
         if s <= t < e:
             c = bg_card(bg, wmc, wma, t, s)
-            ts = max(s, 0.95) if i == 0 else s
+            ts = s
             d = ImageDraw.Draw(c)
             # index marker
             pm = ease_out(prog(t, ts, 0.4))
             d.rectangle((M, 300, M + 34, 334), fill=(BLUE if bg != BLUE else WHITE) + (int(255 * pm),))
-            put_text(c, f"0{i + 1}", M + 58, 293, 40, t, ts, fg, BODY, 0)
+            put_text(c, f"0{i + 2}", M + 58, 293, 40, t, ts, fg, BODY, 0)
             put_text(c, big, M, 760, 148, t, ts, fg, HEAD, -0.045)
             put_text(c, sub, M, 945, 58, t, ts + 0.12, subc, BODYM, -0.01)
             bt = ts + 0.55
@@ -554,7 +613,7 @@ def s_hook(t, img):
 def s_founder_cut(t, img, t0, z0, z1=None, dur=None):
     c = founder(img, t, t0, z0, z1, dur)
     c.alpha_composite(grad_bottom(0.62, 0.7))
-    draw_captions(c, t, zooms=(z0, z1 if z1 is not None else z0 * 1.035))
+    draw_captions(c, t)
     return c
 
 
@@ -689,11 +748,11 @@ def s_map(t, img):
     c.alpha_composite(grad_bottom(0.78, 0.7))
     dr = ImageDraw.Draw(c)
     pk = ease_out(prog(t, MAP_T0 + 0.05, 0.4))
-    dr.rectangle((M, 250, M + 26, 276), fill=BLUE + (int(255 * pk),))
-    put_text(c, "RENTING IN NIGERIA", M + 46, 244, 34, t, MAP_T0 + 0.05, WHITE, BODY, 0.12)
-    put_text(c, "Street to street.", M, 318, 104, t, 9.12, WHITE, HEAD, -0.04)
-    put_text(c, "“Is there any vacant", M, 470, 66, t, 12.55, (200, 205, 225), HEAD2, -0.02)
-    put_text(c, "house around here?”", M, 552, 66, t, 12.85, (200, 205, 225), HEAD2, -0.02)
+    dr.rectangle((M, 286, M + 26, 312), fill=BLUE + (int(255 * pk),))
+    put_text(c, "RENTING IN NIGERIA", M + 46, 280, 34, t, MAP_T0 + 0.05, WHITE, BODY, 0.12)
+    put_text(c, "Street to street.", M, 350, 104, t, 9.12, WHITE, HEAD, -0.04)
+    put_text(c, "“Is there any vacant", M, 500, 66, t, 12.55, (200, 205, 225), HEAD2, -0.02)
+    put_text(c, "house around here?”", M, 582, 66, t, 12.85, (200, 205, 225), HEAD2, -0.02)
     return c
 
 
@@ -750,11 +809,11 @@ PROBLEMS = [
 
 def s_problems(t, img):
     """25.3–32.95  Founder + stacked problem statements."""
-    z = 1.0 if t < 27.0 else (1.12 if t < 28.95 else 1.22)
+    z = MED if t < 27.0 else (1.26 if t < 28.95 else MED)
     t_shot = 25.3 if t < 27.0 else (27.0 if t < 28.95 else 28.95)
-    c = founder(img, t, t_shot, z, z * 1.03, 2.0)
-    c.alpha_composite(grad_bottom(0.45, 0.92))
-    y = 1180
+    c = founder(img, t, t_shot, z, z * 1.02, 2.0)
+    c.alpha_composite(grad_bottom(0.55, 0.92))
+    y = 1385
     active = max(i for i, (s, _) in enumerate(PROBLEMS) if t >= s - 0.05) if t >= PROBLEMS[0][0] - 0.05 else -1
     for i, (s, lines) in enumerate(PROBLEMS):
         if t < s - 0.05:
@@ -766,7 +825,7 @@ def s_problems(t, img):
         pk = ease_out(prog(t, s - 0.05, 0.3))
         d.rectangle((M, y - 50, M + 26, y - 24), fill=BLUE + (int(255 * pk),))
         put_text(c, f"0{i + 1} / 03", M + 44, y - 58, 32, t, s - 0.05, (190, 195, 215), BODY, 0.06)
-        size = 96 if i < 2 else 78
+        size = 76 if i < 2 else 66
         for li, line in enumerate(lines):
             put_text(c, line, M, y + li * int(size * 1.12), size, t, s - 0.05 + li * 0.12, WHITE, HEAD, -0.04,
                      hl=(line if li == 1 else None), hl_color=WHITE, hl_bg=BLUE if li == 1 else None)
@@ -774,16 +833,16 @@ def s_problems(t, img):
 
 
 CHIPS = [
-    (34.55, "Tenants", 95, 520, (-1, -0.4)),
-    (35.66, "Managers", 640, 470, (1, -0.5)),
-    (36.45, "Records", 70, 1010, (-1, 0.3)),
-    (37.15, "Payments", 640, 1060, (1, 0.4)),
+    (34.55, "Tenants", 90, 470, (-1, -0.4)),
+    (35.66, "Managers", 690, 330, (0.3, -0.6)),
+    (36.45, "Records", 90, 1010, (-1, 0.3)),
+    (37.15, "Payments", 540, 1100, (0.4, 0.5)),
 ]
 
 
 def s_juggle(t, img):
     """33.0–39.95  Owners juggling everything — chips float around the founder."""
-    c = founder(img, t, 33.0, 1.0, 1.07, 7.0)
+    c = founder(img, t, 33.0, MED, MED * 1.04, 7.0)
     c.alpha_composite(grad_bottom(0.62, 0.7))
     spread = ease_in_out(prog(t, 38.3, 1.6))
     for k, (s, label, x, y, (dx, dy)) in enumerate(CHIPS):
@@ -793,10 +852,10 @@ def s_juggle(t, img):
         bob = math.sin(t * 2.2 + k * 1.7) * 10
         im = pill(label)
         im = scaled(im, 0.8 + 0.2 * p)
-        xx = x + dx * spread * 140
-        yy = y + bob + dy * spread * 140 + (1 - p) * 24
+        xx = x + dx * spread * 60
+        yy = y + bob + dy * spread * 60 + (1 - p) * 24
         paste(c, im, xx, yy, p * (1 - 0.45 * spread))
-    draw_captions(c, t, zooms=(1.0, 1.07))
+    draw_captions(c, t)
     return c
 
 
@@ -822,15 +881,15 @@ def s_presence(t, img):
     t0 = 47.95
     c = bg_card(WHITE, (232, 232, 232), 1.0, t, t0)
     top_bar(c, t, t0, dark=False)
-    put_text(c, "We're giving", M, 330, 92, t, 48.0, (90, 90, 90), HEAD2, -0.03)
-    put_text(c, "physical properties", M, 440, 110, t, 48.55, BLACK, HEAD, -0.045)
-    put_text(c, "a digital presence.", M, 575, 110, t, 49.55, BLACK, HEAD, -0.045,
+    put_text(c, "We're giving", M, 420, 92, t, 48.0, (90, 90, 90), HEAD2, -0.03)
+    put_text(c, "physical properties", M, 530, 110, t, 48.55, BLACK, HEAD, -0.045)
+    put_text(c, "a digital presence.", M, 665, 110, t, 49.55, BLACK, HEAD, -0.045,
              hl="digital presence.", hl_color=BLUE)
     card, pad = property_card(W - 2 * M)
     tc = 49.85
     if t >= tc:
         p = ease_out(prog(t, tc, 0.6))
-        y = 900 + (1 - p) * 220
+        y = 960 + (1 - p) * 220
         paste(c, card, M - pad, y - pad, min(1, p * 1.5))
         # pulse around the DPI code block
         tp = 50.45
@@ -849,13 +908,13 @@ def s_presence(t, img):
 
 
 NODES = [
-    (51.49, "Owners", (250, 700)),
-    (53.32, "Renters", (830, 760)),
-    (54.27, "Agents", (190, 1270)),
-    (55.16, "Records", (880, 1330)),
-    (55.97, "Services", (540, 1590)),
+    (51.49, "Owners", (220, 680)),
+    (53.32, "Renters", (780, 650)),
+    (54.27, "Agents", (190, 1230)),
+    (55.16, "Records", (720, 1270)),
+    (55.97, "Services", (450, 1400)),
 ]
-CENTER = (540, 1060)
+CENTER = (480, 980)
 _rnd = random.Random(11)
 SAT = []
 for _i in range(30):
@@ -939,8 +998,8 @@ def s_network(t, img):
         below = y > CENTER[1] + 100
         put_text(base, label, x, y + (36 if below else -112), 60, t, ts + 0.1,
                  WHITE, HEAD, -0.03, align="center")
-    put_text(base, "Connecting every property", M, 300, 66, t, 51.49, WHITE, HEAD, -0.03)
-    put_text(base, "to everything around it.", M, 384, 66, t, 56.85, (140, 150, 190), HEAD, -0.03)
+    put_text(base, "Connecting every property", M, 290, 66, t, 51.49, WHITE, HEAD, -0.03)
+    put_text(base, "to everything around it.", M, 374, 66, t, 56.85, (140, 150, 190), HEAD, -0.03)
     return base
 
 
@@ -965,11 +1024,11 @@ def s_identity(t, img):
     """68.2–73.42  History. Identity. Connected to the digital world."""
     t0 = 68.22
     c = bg_card(BLACK, (30, 30, 30), 1.0, t, t0)
-    put_text(c, "It has history.", M, 230, 120, t, 68.27, WHITE, HEAD, -0.045)
-    put_text(c, "An identity.", M, 375, 120, t, 69.63, WHITE, HEAD, -0.045, hl="identity.", hl_color=WHITE, hl_bg=BLUE)
-    put_text(c, "And it connects to the digital world.", M, 545, 50, t, 71.27, (165, 170, 195), BODY, -0.01)
-    specs = [("home_lagos", 360, 175, 810, -7, 71.30), ("listings", 360, 905, 810, 7, 71.42),
-             ("home_ph", 420, 540, 760, 0, 71.55)]
+    put_text(c, "It has history.", M, 275, 120, t, 68.27, WHITE, HEAD, -0.045)
+    put_text(c, "An identity.", M, 420, 120, t, 69.63, WHITE, HEAD, -0.045, hl="identity.", hl_color=WHITE, hl_bg=BLUE)
+    put_text(c, "And it connects to the digital world.", M, 590, 50, t, 71.27, (165, 170, 195), BODY, -0.01)
+    specs = [("home_lagos", 340, 185, 860, -7, 71.30), ("listings", 340, 880, 860, 7, 71.42),
+             ("home_ph", 400, 530, 810, 0, 71.55)]
     for key, w, cx, top, ang, ts in specs:
         if t < ts:
             continue
@@ -1017,25 +1076,25 @@ def s_end(t, img):
 # --------------------------------------------------------------------------- timeline
 TIMELINE = [
     (0.00, 6.62, s_hook),
-    (6.62, 9.10, lambda t, im: s_founder_cut(t, im, 6.62, 1.24, 1.30, 2.4)),
+    (6.62, 9.10, lambda t, im: s_founder_cut(t, im, 6.62, CLOSE, CLOSE * 1.03, 2.4)),
     (9.10, 16.25, s_map),
     (16.25, 18.62, lambda t, im: s_photo(t, im, "DSC00718.jpg", 16.25, 18.62, 0.5, 0.38, 1.0, 1.07)),
-    (18.62, 21.62, lambda t, im: s_founder_cut(t, im, 18.62, 1.0, 1.06, 3.0)),
+    (18.62, 21.62, lambda t, im: s_founder_cut(t, im, 18.62, MED, MED * 1.03, 3.0)),
     (21.62, 25.30, s_question),
     (25.30, 32.95, s_problems),
     (32.95, 39.98, s_juggle),
-    (39.98, 43.80, lambda t, im: s_founder_cut(t, im, 39.98, 1.2, 1.32, 3.8)),
+    (39.98, 43.80, lambda t, im: s_founder_cut(t, im, 39.98, CLOSE, CLOSE * 1.03, 3.8)),
     (43.80, 44.86, s_reveal),
-    (44.86, 47.95, lambda t, im: s_founder_cut(t, im, 44.86, 1.08, 1.14, 3.1)),
+    (44.86, 47.95, lambda t, im: s_founder_cut(t, im, 44.86, MED, MED * 1.03, 3.1)),
     (47.95, 51.45, s_presence),
     (51.45, 59.20, s_network),
     (59.20, 62.12, lambda t, im: s_phone_card(t, im, 59.20, BLUE, WHITE, "Finding a home", "becomes easier.",
                                               "easier.", "listings", None)),
     (62.12, 64.32, lambda t, im: s_phone_card(t, im, 62.12, WHITE, BLACK, "Managing one", "becomes simpler.",
                                               "simpler.", "dashboard", None)),
-    (64.32, 68.22, lambda t, im: s_founder_cut(t, im, 64.32, 1.22, 1.34, 3.9)),
+    (64.32, 68.22, lambda t, im: s_founder_cut(t, im, 64.32, CLOSE, CLOSE * 1.03, 3.9)),
     (68.22, 73.42, s_identity),
-    (73.42, 75.72, lambda t, im: s_founder_cut(t, im, 73.42, 1.06, 1.16, 2.3)),
+    (73.42, 75.72, lambda t, im: s_founder_cut(t, im, 73.42, MED, MED * 1.04, 2.3)),
     (75.72, 79.00, s_final),
     (79.00, TOTAL, s_end),
 ]
@@ -1062,7 +1121,7 @@ def main():
             frame_at(t, foot).save(out)
         return
     out = args[0] if args else os.path.join(ROOT, "edit", "video_only.mp4")
-    t_from, t_to = 0.0, TOTAL
+    t_from, t_to = 0.0, TOTAL - OFFSET   # output time; source time = output + OFFSET
     if "--from" in args:
         t_from = float(args[args.index("--from") + 1])
     if "--to" in args:
@@ -1074,7 +1133,7 @@ def main():
         stdin=subprocess.PIPE)
     n0, n1 = int(round(t_from * FPS)), int(round(t_to * FPS))
     for n in range(n0, n1):
-        t = n / FPS
+        t = n / FPS + OFFSET
         enc.stdin.write(frame_at(t, foot).tobytes())
         if n % 150 == 0:
             print(f"  {t:6.2f}s", flush=True)

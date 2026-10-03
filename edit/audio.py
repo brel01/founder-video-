@@ -17,6 +17,7 @@ N = int(TOTAL * SR)
 rng = np.random.default_rng(3)
 
 BPM = 80
+OFFSET = 0.85  # keep in sync with render.OFFSET
 BEAT = 60 / BPM
 
 
@@ -210,106 +211,206 @@ def pop(m=79, dur=0.3):
     return np.sin(2 * np.pi * np.cumsum(f) / SR) * np.exp(-tt * 16)
 
 
-# ---------------------------------------------------------------- score
+# ---------------------------------------------------------------- score v2
+# Driving, curious, cinematic: D Phrygian ostinato (the b2 Eb keeps it
+# unresolved), clock-like hats, pulsing bass, then a full drop at "At Urbn".
+SBPM = 96
+SB = 60 / SBPM          # beat
+S16 = SB / 4
+GRID0 = 0.85            # first downbeat = first frame of the cut
+
+
+_cache = {}
+
+
+def saw_note(m, dur, bright=1.0, decay=6.0, nh=24):
+    """Band-limited saw with a filter-like decaying brightness (cached)."""
+    key = (m, round(dur, 3), round(bright, 2), decay)
+    if key in _cache:
+        return _cache[key]
+    n = int(dur * SR)
+    tt = np.arange(n) / SR
+    f = midi(m)
+    s = np.zeros(n)
+    cut = 600 + 5000 * bright
+    for h in range(1, nh + 1):
+        if f * h > 16000:
+            break
+        # higher harmonics die faster -> plucky "string" envelope
+        amp = (1 / h) * np.exp(-tt * decay * (1 + h * f / cut))
+        s += amp * np.sin(2 * np.pi * f * h * tt)
+    e = np.ones(n)
+    a = int(0.003 * SR)
+    e[:a] = np.linspace(0, 1, a)
+    r = int(min(0.03, dur / 3) * SR)
+    e[-r:] *= np.linspace(1, 0, r)
+    _cache[key] = s * e
+    return _cache[key]
+
+
+def bass_note(m, dur, bright=0.5):
+    n = int(dur * SR)
+    tt = np.arange(n) / SR
+    f = midi(m)
+    s = np.sin(2 * np.pi * f * tt) * 1.0 + saw_note(m, dur, bright, 7.0, 10) * 0.6
+    e = np.exp(-tt * 3.0)
+    e[-int(0.02 * SR):] *= np.linspace(1, 0, int(0.02 * SR))
+    return s * e
+
+
+def hat(open_=False, dur=None):
+    dur = dur or (0.25 if open_ else 0.05)
+    n = int(dur * SR)
+    tt = np.arange(n) / SR
+    s = hp(rng.standard_normal(n), 7000, 4) * np.exp(-tt * (12 if open_ else 70))
+    return s
+
+
+def snare(dur=0.3):
+    n = int(dur * SR)
+    tt = np.arange(n) / SR
+    body = np.sin(2 * np.pi * 185 * tt) * np.exp(-tt * 30)
+    nz = bp(rng.standard_normal(n), 1500, 9000) * np.exp(-tt * 14)
+    return body * 0.6 + nz * 0.8
+
+
+def clock(dur=0.04):
+    n = int(dur * SR)
+    tt = np.arange(n) / SR
+    return (np.sin(2 * np.pi * 3100 * tt) + 0.6 * np.sin(2 * np.pi * 4700 * tt)) * np.exp(-tt * 160)
+
+
+def grid(t0, t1, step, phase=0.0):
+    k0 = int(np.ceil((t0 - GRID0 - phase) / step - 1e-6))
+    t = GRID0 + phase + k0 * step
+    while t < t1 - 1e-6:
+        yield k0, t
+        k0 += 1
+        t += step
+
+
 def score():
     mus = np.zeros((N, 2))
-    D2, F2, A2, Bb1, C2, G2 = 38, 41, 45, 34, 36, 43
+    bar = SB * 4
 
-    # A. Hook (0–6.62): light, quick, "everything is easy" pluck ostinato in F
-    arp_a = [65, 72, 69, 77, 72, 69, 76, 72]   # F4 C5 A4 F5 C5 A4 E5 C5
-    t = 0.12
-    i = 0
-    while t < 6.55:
-        add(mus, pluck(arp_a[i % 8], 0.7), t, 0.16, pan=(-0.35 if i % 2 else 0.35))
-        t += BEAT / 2
-        i += 1
-    add(mus, pad([53, 60, 64, 69], 6.3, a=0.6, r=0.05, bright=1.1), 0.0, 0.5)
+    # Chord tables (MIDI). Tension: D Phrygian / Dm with Eb. Lift: F major family.
+    OST_T = [[62, 69, 74, 75], [62, 69, 74, 72], [62, 69, 70, 74], [62, 68, 74, 75]]   # D A D Eb / … / Ab (tritone)
+    PROG_C = [(50, [50, 57, 62, 65]), (46, [46, 53, 58, 62]), (43, [43, 50, 55, 58]), (45, [45, 52, 57, 61])]
+    PROG_D = [(41, [53, 60, 65, 69]), (48, [48, 55, 64, 67]), (50, [50, 57, 62, 65]), (46, [46, 53, 62, 65])]
 
-    # B. Problem, intimate (6.62–25.3): dark Dm drone, sparse
-    add(mus, pad([D2 + 12, A2 + 12, 53, 57], 9.2, a=2.5, r=2.0, bright=0.55), 6.9, 0.85)
-    add(mus, pad([Bb1 + 12, 50, 53, 58], 9.0, a=2.5, r=2.5, bright=0.55), 15.6, 0.85)
-    add(mus, sub(D2 - 12, 8.5, a=1.5, r=1.5), 6.9, 0.18)
-    add(mus, sub(Bb1 - 12, 8.0, a=1.5, r=1.5), 15.6, 0.16)
-    for k, tt in enumerate(np.arange(9.4, 16.0, BEAT * 2)):     # soft footsteps-like pulse under the map
-        add(mus, kick(70, 40, 0.3, 0.05), tt, 0.10)
-    for tt, m in [(16.4, 74), (18.8, 72), (21.75, 69)]:        # lonely high notes
-        add(mus, bell(m, 3.0), tt, 0.035, pan=0.2)
+    def ostinato(t0, t1, table, gain, bright, octave=0, pan=0.45, accent=True):
+        for k, t in grid(t0, t1, S16):
+            pat = table[(k // 16) % len(table)]
+            m = pat[k % 4] + octave
+            g = gain * (1.25 if (accent and k % 4 == 0) else 1.0)
+            add(mus, saw_note(m, S16 * 1.6, bright, 9.0), t, g, pan=pan if k % 2 else -pan)
 
-    # C. Tension (25.3–43.8): pulse + ostinato, progression Dm–Bb–Gm–A
-    prog_c = [([50, 57, 62, 65], D2), ([46, 53, 58, 62], Bb1 + 12), ([43, 50, 55, 58], G2 - 12 + 12), ([45, 52, 57, 61], A2 - 12 + 12)]
-    t0 = 25.3
-    bar = BEAT * 4
-    k = 0
-    tt = t0
-    while tt < 43.3:
-        chord, root = prog_c[k % 4]
-        L = min(bar * 1.0, 43.55 - tt)
-        add(mus, pad(chord, L, a=0.8, r=1.2, bright=0.65 + 0.03 * k), tt, 0.7 + 0.04 * k)
-        add(mus, sub(root - 12, L - 0.1, a=0.2, r=0.5), tt, 0.17)
-        k += 1
-        tt += bar
-    ost = [74, 69, 65, 69]
-    tt, i = t0, 0
-    while tt < 43.5:
-        g = 0.035 + 0.07 * (tt - t0) / 18
-        add(mus, pluck(ost[i % 4] - (0 if (int((tt - t0) / bar) % 4) < 2 else 2), 0.5, 0.7), tt, g,
-            pan=(-0.4 if i % 2 else 0.4))
-        tt += BEAT / 2
-        i += 1
-    tt = t0
-    while tt < 43.5:
-        g = 0.12 + 0.12 * (tt - t0) / 18
-        add(mus, kick(95, 42, 0.4, 0.02), tt, g)
-        tt += BEAT
-    # Pre-drop silence 43.55–43.87 is left empty on purpose.
+    def bassline(t0, t1, roots, gain, bright=0.4, pattern=(1, 0, 1, 1, 0, 1, 1, 0)):
+        for k, t in grid(t0, t1, SB / 2):
+            if not pattern[k % len(pattern)]:
+                continue
+            r = roots[(k // 8) % len(roots)]
+            m = r + (12 if k % 8 == 3 else 0)
+            add(mus, bass_note(m, SB / 2 * 0.9, bright), t, gain)
 
-    # D. Vision (43.87–64.3): lift to F major, I–V–vi–IV
-    prog_d = [([53, 60, 65, 69, 72], F2), ([48, 55, 64, 67, 72], C2 + 12), ([50, 57, 62, 65, 69], D2), ([46, 53, 62, 65, 70], Bb1 + 12)]
-    t0 = 43.87
-    tt, k = t0, 0
-    while tt < 75.6:
-        chord, root = prog_d[k % 4]
-        L = min(bar, 75.75 - tt)
-        bright = 0.85 + 0.02 * k
-        add(mus, pad(chord, L, a=0.35, r=1.4, bright=bright), tt, 0.85 + 0.03 * k)
-        add(mus, sub(root - 12, L - 0.05, a=0.05, r=0.6), tt, 0.2)
-        k += 1
-        tt += bar
-    arp_d = [0, 2, 1, 3, 2, 4, 3, 2]
-    tt, i = t0, 0
-    while tt < 75.6:
-        chord, _ = prog_d[int((tt - t0) / bar) % 4]
-        m = chord[arp_d[i % 8] % len(chord)] + 12
-        g = 0.05 + 0.06 * min(1, (tt - t0) / 25)
-        add(mus, pluck(m, 0.65, 1.1), tt, g, pan=(-0.45 if i % 2 else 0.45))
-        tt += BEAT / 2
-        i += 1
-    tt = t0
-    while tt < 75.6:
-        g = 0.16 + 0.10 * min(1, (tt - t0) / 25)
-        add(mus, kick(105, 44, 0.45, 0.03), tt, g)
-        tt += BEAT
-    # E. lift: high shimmer layer from 64.3
-    for tt in np.arange(64.32, 75.5, BEAT / 4):
-        chord, _ = prog_d[int((tt - t0) / bar) % 4]
-        add(mus, pluck(chord[int(tt * 7) % len(chord)] + 24, 0.3, 1.2), tt, 0.018, pan=rng.uniform(-0.8, 0.8))
+    def kicks(t0, t1, gain, every=1.0, f0=120):
+        for k, t in grid(t0, t1, SB * every):
+            add(mus, kick(f0, 44, 0.42, 0.02), t, gain)
 
-    # F. Resolve (75.7 →): F add9 swell, long ring on the end card
-    add(mus, pad([41, 53, 60, 65, 67, 72], 6.5, a=1.2, r=3.0, bright=1.0), 75.72, 0.9)
-    add(mus, pad([41, 48, 57, 65, 67, 72, 76], 4.2, a=0.05, r=3.0, bright=1.15), 77.81, 1.0)
-    add(mus, sub(F2 - 12, 4.0, a=0.02, r=2.5), 77.81, 0.26)
+    def hats(t0, t1, gain, step=S16, open_on=None):
+        for k, t in grid(t0, t1, step):
+            o = open_on is not None and k % open_on == open_on // 2
+            add(mus, hat(o), t, gain * (0.6 + 0.4 * (k % 2 == 0)) * (1.4 if o else 1), pan=0.3 if k % 2 else -0.3)
+
+    def snares(t0, t1, gain):
+        for k, t in grid(t0, t1, SB):
+            if k % 2 == 1:
+                add(mus, snare(), t, gain)
+
+    # A. Hook 0.85–6.62: tense and moving from the first frame
+    add(mus, pad([38, 50, 57, 63], 5.9, a=0.05, r=0.1, bright=0.6), GRID0, 0.55)    # D + Eb cluster drone
+    ostinato(GRID0, 6.55, OST_T, 0.050, 0.55)
+    bassline(GRID0, 6.55, [26], 0.20, 0.35)
+    kicks(GRID0, 6.55, 0.22, every=2)
+    hats(GRID0, 6.55, 0.035)
+    add(mus, riser(1.4), 5.2, 0.10)
+    # 6.62: hard stop (impact in sfx); clock keeps ticking -> curiosity, not calm
+
+    # B. 6.62–25.3: suspense. Ticking clock + low drone + sparse heartbeat bass
+    for k, t in grid(6.62, 25.25, SB / 2):
+        add(mus, clock(), t, 0.05 if k % 2 == 0 else 0.03, pan=0.35 if k % 2 else -0.35)
+    add(mus, pad([38, 45, 51], 9.0, a=1.2, r=2.0, bright=0.45), 6.8, 0.75)            # D A Eb
+    add(mus, pad([34, 46, 53, 51], 9.2, a=2.0, r=2.0, bright=0.45), 15.6, 0.75)        # Bb with Eb
+    bassline(9.1, 16.2, [26], 0.12, 0.25, pattern=(1, 0, 0, 1, 0, 0, 1, 0))            # walking pulse under the map
+    ostinato(9.1, 16.2, [[74, 69, 75, 69]], 0.018, 0.35, pan=0.6, accent=False)        # distant, searching
+    for t, m in [(16.4, 75), (17.6, 74), (18.8, 70), (20.0, 69)]:
+        add(mus, bell(m, 2.5), t, 0.03, pan=0.25)
+    add(mus, pad([62, 63, 69], 3.6, a=0.02, r=1.5, bright=0.7), 21.62, 0.35)           # question: unresolved cluster
+    add(mus, sub(26, 3.4, a=0.01, r=1.0), 21.62, 0.25)
+
+    # C. 25.3–43.55: the problem builds — ostinato, bass, kick, hats, filter opening
+    t0, t1 = 25.3, 43.5
+    for k, t in grid(t0, t1, bar):
+        root, chord = PROG_C[k % 4]
+        add(mus, pad(chord, min(bar, t1 - t) + 0.05, a=0.3, r=0.8, bright=0.55 + 0.25 * (t - t0) / (t1 - t0)), t, 0.6)
+    for seg0 in np.arange(t0, t1, bar):
+        bright = 0.35 + 0.6 * (seg0 - t0) / (t1 - t0)
+        ostinato(seg0, min(seg0 + bar, t1), OST_T, 0.04 + 0.03 * (seg0 - t0) / (t1 - t0), bright)
+    bassline(t0, t1, [26, 22, 19, 21], 0.20, 0.45)
+    kicks(t0, t1, 0.26)
+    hats(t0, t1, 0.03)
+    hats(34.0, t1, 0.02, step=SB, open_on=2)
+    snares(34.6, t1, 0.10)
+    for k, t in grid(41.65, 43.5, S16):        # snare roll into the drop
+        add(mus, snare(0.12), t, 0.03 + 0.10 * (t - 41.65) / 1.85)
+    # 43.55–43.87 silence, then the drop
+
+    # D. 43.87–64.3: drive — the vision. F major family, full kit.
+    t0, t1 = 43.87, 75.6
+    for k, t in grid(t0, t1, bar, phase=(43.87 - GRID0) % bar):
+        root, chord = PROG_D[k % 4]
+        add(mus, pad(chord, min(bar, t1 - t) + 0.05, a=0.08, r=1.0, bright=0.9), t, 0.75)
+    arp = [0, 1, 2, 3, 2, 1, 3, 2]
+    for k, t in grid(t0, t1, S16, phase=(43.87 - GRID0) % S16):
+        _, chord = PROG_D[int((t - t0) / bar) % 4]
+        m = chord[arp[k % 8]] + 12
+        add(mus, saw_note(m, S16 * 1.5, 0.9, 8.0), t, 0.045, pan=0.5 if k % 2 else -0.5)
+    for k, t in grid(t0, t1, SB / 2, phase=(43.87 - GRID0) % (SB / 2)):
+        root = PROG_D[int((t - t0) / bar) % 4][0]
+        add(mus, bass_note(root - 12 + (12 if k % 4 == 3 else 0), SB / 2 * 0.9, 0.5), t, 0.22)
+    for k, t in grid(t0, t1, SB, phase=(43.87 - GRID0) % SB):
+        add(mus, kick(125, 44, 0.42, 0.02), t, 0.30)
+        if k % 2 == 1:
+            add(mus, snare(), t, 0.13)
+    hats(t0, t1, 0.03)
+    # E. 64.3–75.6 lift: high octave arp + open hats
+    for k, t in grid(64.32, t1, S16):
+        _, chord = PROG_D[int((t - t0) / bar) % 4]
+        add(mus, saw_note(chord[(k * 3) % 4] + 24, S16 * 1.2, 1.0, 10.0), t, 0.022, pan=0.7 if k % 2 else -0.7)
+    hats(64.32, t1, 0.03, step=SB, open_on=2)
+    for k, t in grid(74.1, 75.6, S16):        # roll into the final line
+        add(mus, snare(0.12), t, 0.03 + 0.08 * (t - 74.1) / 1.5)
+
+    # F. Resolve: hold on "the digital infrastructure…", land on "housing."
+    add(mus, pad([38, 50, 57, 62, 64], 2.2, a=0.05, r=0.6, bright=0.8), 75.72, 0.7)
+    add(mus, sub(26, 2.0, a=0.01, r=0.4), 75.72, 0.2)
+    for k, t in grid(75.72, 77.75, SB / 2):
+        add(mus, clock(), t, 0.06)
+    add(mus, pad([41, 53, 60, 65, 67, 72, 76], 5.0, a=0.02, r=3.0, bright=1.1), 77.81, 1.0)
+    add(mus, sub(29, 4.0, a=0.01, r=2.5), 77.81, 0.28)
     for j, m in enumerate([77, 81, 84, 88]):
         add(mus, bell(m, 4.0), 79.1 + j * 0.18, 0.05, pan=-0.3 + 0.2 * j)
 
-    mus = reverb(mus, wet=0.32, seconds=3.6, damp=6000)
+    mus = reverb(mus, wet=0.22, seconds=2.6, damp=6500)
     return mus
 
 
 def sfx():
     s = np.zeros((N, 2))
     # hook
-    add(s, whoosh(0.9, 0.6), 0.1, 0.18)
-    for ts, tb in [(0.95, 1.5), (2.95, 3.5), (4.28, 4.83)]:
+    add(s, impact(0.5), 0.85, 0.22)            # first frame lands on a hit
+    add(s, blip(88), 1.75, 0.12, pan=-0.2)     # "Order placed"
+    for ts, tb in [(2.95, 3.5), (4.28, 4.83)]:
         add(s, tick(2400), ts, 0.22)
         add(s, blip(88), tb, 0.12, pan=-0.2)
     add(s, whoosh(0.35, 1.0), 2.80, 0.18)
@@ -401,8 +502,8 @@ def main():
     duck = duck_curve(v)
     # Score level automation (dB): bright hook, hushed confession, building
     # tension, lift at the reveal, music forward on the end card.
-    auto = [(0, -10), (6.5, -10), (6.62, -19), (25.2, -18), (25.4, -17), (43.5, -14.5), (43.87, -16),
-            (64.0, -16), (75.5, -14), (77.8, -11), (TOTAL, -11)]
+    auto = [(0, -11), (6.5, -11), (6.62, -15), (25.2, -15), (25.4, -12.5), (43.5, -10.5), (43.87, -13),
+            (64.0, -13), (64.3, -11.5), (75.5, -10.5), (77.8, -11), (TOTAL, -11)]
     at, ag = zip(*auto)
     mus *= (10 ** (np.interp(np.arange(N) / SR, at, ag) / 20))[:, None]
     mus *= duck[:, None]
@@ -412,6 +513,11 @@ def main():
     mix = np.stack([v, v], 1) + mus + fx
     # fade in/out
     fi = int(0.02 * SR)
+    mix[:fi] *= np.linspace(0, 1, fi)[:, None]
+    # the cut starts at OFFSET (dead air before the first word is trimmed)
+    k = int(OFFSET * SR)
+    mix, mus, fx = mix[k:], mus[k:], fx[k:]
+    fi = int(0.01 * SR)
     mix[:fi] *= np.linspace(0, 1, fi)[:, None]
     sf.write(out, mix.astype(np.float32), SR, subtype="FLOAT")
     sf.write(out.replace(".wav", "_music.wav"), (mus + fx).astype(np.float32), SR, subtype="FLOAT")

@@ -1,13 +1,15 @@
 # Urbn — Founder Film
 
-Final cut: `output/Urbn_Founder_Film.mp4` (1080×1920, 30 fps, 84 s, H.264 + AAC, mastered to −14 LUFS / −1 dBTP).
+Final cut: `output/Urbn_Founder_Film.mp4` (1080×1920, 30 fps, 83 s, H.264 + AAC, mastered to −14 LUFS / −1 dBTP).
+
+Times in the table below are source times. The cut trims the first 0.85 s of dead air, so in the final video each one lands 0.85 s earlier.
 
 ## Story structure
 
 | Time | Founder says | On screen |
 |---|---|---|
-| 0:00–0:06 | "You can order food… send money… book a flight…" | Hook: three brand cards in black, blue and white, each with a success-state chip and UI sound, over a light, upbeat pluck motif |
-| 0:06 | "But when it comes to renting a house in Nigeria…" | Hard cut to a tight punch-in. The music drops out under a low impact |
+| 0:00–0:06 | "You can order food… send money… book a flight…" | Hook: opens on the founder's face with a "Why I'm building Urbn" kicker and an "Order placed" chip, then two quick brand cards (send money, book a flight). A tense ostinato, pulsing bass and ticking hats play under it |
+| 0:06 | "But when it comes to renting a house in Nigeria…" | Hard cut to the close framing. The music stops dead on an impact and a ticking clock carries the suspense |
 | 0:09–0:16 | "walking street to street asking the security man…" | Animated city map: a walker's path with "?" markers that go unanswered |
 | 0:16 | "I know this because I have gone through it." | Founder portrait (DSC00718) with a slow push |
 | 0:21 | "Why is housing still disconnected?" | Full-screen statement. "disconnected?" splits in two |
@@ -35,6 +37,23 @@ ffmpeg -i edit/video_only.mp4 -i edit/mix.wav -map 0:v -map 1:a -c:v libx264 -cr
 
 `python3 edit/render.py --still 44.3 frame.png` renders single frames for review.
 All timings live in `TIMELINE`, `CAPTIONS` and the scene functions in `render.py`. Sound cues are in `sfx()` and `score()` in `audio.py`.
+
+## Framing, safe zones and captions
+
+- **Framing:** the founder is face-tracked (`edit/track_face.py` writes `edit/assets/face_track.json`). Every founder shot uses one of two framings, `MED` (1.18×) or `CLOSE` (1.36×), with his eyes held at the same height in the upper third. This removes the excess headroom in the original take and keeps cuts consistent.
+- **Instagram safe zone:** all text and key graphics sit between y≈250 and y≈1535 and left of the right-hand button column (x≈880). The header bar, map headline, network labels and chips were moved inside it.
+- **Captions:** one style and one position throughout. They are single lines, left-aligned at the brand margin, with hand-set phrase breaks (`|` in `CAPTIONS`), and they never cover the logo on the founder's T-shirt.
+
+## Music
+
+The score is built to provoke curiosity rather than calm:
+
+- **Hook:** a D Phrygian string ostinato. Its flat second (Eb) keeps it unresolved, over pulsing bass and ticking hats.
+- **The turn:** the music stops dead on "renting a house in Nigeria". A ticking clock and a dark drone carry the suspense through the personal story.
+- **The problem:** a build with the ostinato, bass, kick and a filter that opens, ending in a snare roll and riser.
+- **"At Urbn":** a hard drop into a driving F-major section with a full kit.
+- **The vision:** a high arpeggio lifts it further.
+- **The end:** the music lands on "housing" and resolves under the end card.
 
 ## Notes
 
