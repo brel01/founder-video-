@@ -19,10 +19,30 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), "edit"))
 import audio as A  # noqa: E402  (filters, reverb and percussion helpers)
 
 SR = A.SR
-TOTAL = 28.5
-N = int(TOTAL * SR)
+TOTAL = 28.5  # story time (tau), as in animate.py
+
+# Output time <-> story time (keep in sync with animate.WARP). Music and
+# effects are written in story time and converted; voices are placed in
+# output time directly.
+WARP = [(0.0, 0.0), (11.6, 11.6), (15.3, 14.2), (22.1, 21.0), (25.3, 22.6), (31.2, 28.5)]
+TOTAL_OUT = WARP[-1][0]
+N = int(TOTAL_OUT * SR)
 rng = np.random.default_rng(11)
-lp, hp, bp, add, reverb = A.lp, A.hp, A.bp, A.add, A.reverb
+lp, hp, bp, reverb = A.lp, A.hp, A.bp, A.reverb
+add_out = A.add
+
+
+def T(tau):
+    """story time -> output time"""
+    return float(np.interp(tau, [b for _, b in WARP], [a for a, _ in WARP]))
+
+
+def Tinv(t):
+    return float(np.interp(t, [a for a, _ in WARP], [b for _, b in WARP]))
+
+
+def add(buf, sig, tau, gain=1.0, pan=0.0):
+    A.add(buf, sig, T(tau), gain, pan)
 BPM = 104
 B = 60 / BPM
 S16 = B / 4
@@ -117,6 +137,24 @@ def runner_vocal(kind):
     return voice([("a", .75, 1.15), ("h", .1, .9)], 135, 0.2)  # "Ahhh"
 
 
+# ------------------------------------------------------------------ recorded sound effects
+SFX_DIR = os.path.join(HERE, "sfx")
+
+
+def load_sfx(name, t0=None, t1=None):
+    """Decode a recorded effect to mono 48 kHz float (returns None if missing)."""
+    import subprocess
+    path = os.path.join(SFX_DIR, name)
+    if not os.path.exists(path):
+        return None
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-ac", "1", "-ar", str(SR), "-f", "f32le", "-"],
+                         capture_output=True, check=True).stdout
+    x = np.frombuffer(raw, np.float32).astype(float)
+    if t0 is not None:
+        x = x[int(t0 * SR):int(t1 * SR) if t1 else None]
+    return x
+
+
 # ------------------------------------------------------------------ percussion / instruments
 def dundun(f0, bend=0.0, dur=0.32):
     """Talking drum: membrane with a pitch slide (squeezed tension cords)."""
@@ -176,10 +214,13 @@ def talking_phrase(buf, t0, gain=0.3, pan=0.15):
 
 
 def grid(t0, t1, step, origin=0.0):
-    k = int(np.ceil((t0 - origin) / step - 1e-6))
+    """Regular grid in OUTPUT time between story times t0..t1 (tempo stays steady
+    through stretched beats); yields story times so add() lands on the grid."""
+    o0, o1 = T(t0), T(t1)
+    k = int(np.ceil((o0 - origin) / step - 1e-6))
     t = origin + k * step
-    while t < t1 - 1e-6:
-        yield k, t
+    while t < o1 - 1e-6:
+        yield k, Tinv(t)
         k += 1
         t += step
 
@@ -247,73 +288,178 @@ def music():
     kicks(21.0, 27.6, 0.26)
     claps(21.0, 27.6, 0.12)
     kals(21.0, 27.6, 0.07, LIFT)
-    add(m, A.pad([53, 60, 65, 69, 72], 6.6, a=0.05, r=1.2, bright=1.0), 21.0, 0.5)
+    add(m, A.pad([53, 60, 65, 69, 72], T(27.6) - T(21.0), a=0.05, r=1.2, bright=1.0), 21.0, 0.5)
     talking_phrase(m, 24.0, 0.26, -0.1)
     talking_phrase(m, 27.25, 0.34)             # the drum says it one last time
     return reverb(m, wet=0.18, seconds=1.6, damp=7000)
 
 
-def sfx(m_duck):
+# ------------------------------------------------------------------ recorded voices
+VOICE_DIR = os.path.join(HERE, "voice")
+# (file, start, end) in the raw recordings — mapped from the slates
+TAKES = {
+    "S0": ("shouter.m4a", 0.95, 2.12),     # warm-up take, used for the far-away echo from the city
+    "S1": ("shouter.m4a", 5.30, 7.30),
+    "S2": ("shouter.m4a", 9.02, 10.90),
+    "S3": ("shouter.m4a", 14.45, 17.88),   # "I… BA… DAN… IS… URBN!"
+    "S4": ("shouter.m4a", 19.05, 21.45),
+    "R1": ("runner.m4a", 4.95, 6.25),      # "Oga, wetin you dey talk?!"
+    "R2": ("runner.m4a", 11.45, 12.42),    # "Ibadan na… TURBO??" (first of two takes)
+    "R3": ("runner.m4a", 15.85, 17.92),    # "Ibadan na URBAN?! Since when?!"
+    "R4": ("runner.m4a", 30.15, 32.85),    # "Wait o… wait…" (panting)
+    "R5": ("runner.m4a", 35.75, 38.90),    # "Ah!… Ibadan is Urbn!"
+    "R6": ("runner.m4a", 40.25, 41.85),    # "IBADAN IS URBN!"
+}
+
+
+def take(name):
+    """Cut a take and clean it: rumble cut, denoise, gentle compression, level match."""
+    import subprocess
+    f, t0, t1 = TAKES[name]
+    nr = 16 if f.startswith("runner") else 9
+    chain = ",".join([f"atrim={t0}:{t1}", "asetpts=PTS-STARTPTS", "highpass=f=90",
+                      f"afftdn=nr={nr}:nf=-38:tn=1", "equalizer=f=250:t=q:w=1:g=-2",
+                      "equalizer=f=3500:t=q:w=1:g=2", "acompressor=threshold=-20dB:ratio=3:attack=5:release=90",
+                      "aresample=48000"])
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", os.path.join(VOICE_DIR, f), "-af", chain, "-ac", "1",
+                          "-f", "f32le", "-"], capture_output=True, check=True).stdout
+    x = np.frombuffer(raw, np.float32).astype(float)
+    x /= np.sqrt(np.mean(x ** 2)) + 1e-9
+    x *= 10 ** (-20 / 20)   # every take to -20 dBFS RMS
+    fade = int(0.012 * SR)
+    x[:fade] *= np.linspace(0, 1, fade)
+    x[-fade * 3:] *= np.linspace(1, 0, fade * 3)
+    return x
+
+
+def voices():
+    v = np.zeros((N, 2))
+    # shouter: three attempts, from far and muffled to close and clear
+    add_out(v, distance(take("S1"), 0.08), 0.55, 0.75)
+    add_out(v, distance(take("S2"), 0.5), 6.45, 1.05)
+    add_out(v, distance(take("S3"), 0.96), 11.75, 0.95)
+    # runner: close to camera, nearly dry
+    for name, tau, g in [("R1", 3.45, 1.0), ("R2", 9.35, 1.0), ("R3", 14.4, 1.0), ("R4", 17.1, 0.9), ("R5", 21.0, 1.0)]:
+        x = take(name)
+        add_out(v, reverb(x, wet=0.08, seconds=0.9, damp=6000), T(tau), g, pan=-0.08)
+    # together on the hill
+    add_out(v, distance(take("S4"), 0.95), T(22.7), 0.85, pan=0.12)
+    add_out(v, distance(take("R6"), 0.97), T(22.7) + 0.06, 0.75, pan=-0.12)
+    # the chain: someone down in the city shouts it on
+    add_out(v, distance(take("S0"), 0.02) * 0.6, T(23.3), 0.9, pan=0.45)
+    return v
+
+
+def loop_bed(x, n, xf_s=0.5):
+    xf = int(xf_s * SR)
+    bed = np.zeros(n + len(x))
+    i = 0
+    while i < n:
+        seg = x.copy()
+        seg[:xf] *= np.linspace(0, 1, xf)
+        seg[-xf:] *= np.linspace(1, 0, xf)
+        bed[i:i + len(seg)] += seg
+        i += len(seg) - xf
+    return bed[:n]
+
+
+def ambience():
+    """Recorded beds: the city (street noise) below, crickets on the hill, wind up top."""
     s = np.zeros((N, 2))
-    # wind bed
-    wind = lp(rng.standard_normal(N), 700)
-    lfo = 0.6 + 0.4 * np.sin(2 * np.pi * 0.13 * np.arange(N) / SR)
-    s += np.stack([wind * lfo, np.roll(wind, 2000) * lfo], 1) * 0.05
-    # shouts
-    for (t0, q, p2) in [(0.55, 0.08, None), (6.45, 0.5, None), (11.75, 1.0, None), (22.7, 1.0, 0.82)]:
-        sh = shout(q, pitch2=p2)
-        add(s, sh, t0, 0.9)
-        L = int(len(sh) * 0.75)
-        a, b = int(t0 * SR), min(N, int(t0 * SR) + L)
-        m_duck[a:b] *= 0.45
-    # runner vocal ticks
-    for t0, k in [(3.45, "eh"), (9.2, "huh"), (14.4, "ehn"), (21.05, "ahh")]:
-        add(s, runner_vocal(k), t0, 0.35, pan=-0.1)
-    # footsteps and breath while running
+    tt = np.arange(N) / SR
+    shots = [(0.0, 3.2, "wide"), (3.2, 6.2, "runner"), (6.2, 9.0, "tower"), (9.0, 11.6, "runner"),
+             (11.6, 14.2, "tower"), (14.2, 17.0, "runner"), (17.0, 18.8, "tower"), (18.8, 21.0, "phone"),
+             (21.0, 22.6, "runner"), (22.6, 24.6, "wide"), (24.6, TOTAL, "end")]
+
+    def level(table):
+        g = np.zeros(N)
+        for a, b, kind in shots:
+            g[(tt >= T(a)) & (tt < T(b))] = table[kind]
+        sm = int(0.25 * SR)
+        return np.convolve(g, np.ones(sm) / sm, "same")
+
+    street = load_sfx("street2.m4a")
+    if street is not None:
+        x = hp(street, 80, 2)
+        x /= np.sqrt(np.mean(x ** 2)) + 1e-9
+        bed = loop_bed(x, N)
+        near = lp(bed, 6000)
+        far = lp(bed, 900)          # heard from up the hill: distant, muffled
+        gn = level({"wide": 0.040, "runner": 0.0, "tower": 0.0, "phone": 0.0, "end": 0.0})
+        gf = level({"wide": 0.0, "runner": 0.022, "tower": 0.016, "phone": 0.008, "end": 0.012})
+        s += np.stack([near * gn + far * gf, np.roll(near, 900) * gn + np.roll(far, 900) * gf], 1)
+    crick = load_sfx("street3_crickets.m4a")
+    if crick is not None:
+        x = hp(crick, 2500, 2)      # keep the crickets, lose the traffic
+        x /= np.sqrt(np.mean(x ** 2)) + 1e-9
+        bed = loop_bed(x, N, 0.8)
+        g = level({"wide": 0.010, "runner": 0.022, "tower": 0.030, "phone": 0.006, "end": 0.0})
+        s += np.stack([bed * g, np.roll(bed, 1500) * g], 1)
+    wind = lp(rng.standard_normal(N), 600)
+    lfo = 0.6 + 0.4 * np.sin(2 * np.pi * 0.13 * tt)
+    g = level({"wide": 0.02, "runner": 0.025, "tower": 0.05, "phone": 0.0, "end": 0.0})
+    s += np.stack([wind * lfo * g, np.roll(wind, 2000) * lfo * g], 1)
+    return s
+
+
+def sfx():
+    s = np.zeros((N, 2))
+    # real grass recording (ibadan/sfx/grass.m4a) under the climb, louder when the camera is on the runner
+    grass = load_sfx("grass.m4a", 0.2, 5.9)
+    if grass is not None:
+        g = hp(grass, 150, 2)
+        g /= np.abs(g).max() + 1e-9
+        o0, o1 = T(3.15), T(18.1)
+        need = int((o1 - o0) * SR)
+        bed = loop_bed(g, need, 0.4)
+        tt = o0 + np.arange(need) / SR
+        close = np.zeros(need)
+        for a, b in [(3.2, 6.2), (9.0, 11.6), (14.2, 17.0)]:
+            close[(tt >= T(a)) & (tt < T(b))] = 1
+        sm = int(0.12 * SR)
+        close = np.convolve(close, np.ones(sm) / sm, "same")
+        gain = (0.05 + 0.13 * close) * np.clip((tt - o0) / 0.3, 0, 1) * np.clip((o1 - tt) / 0.6, 0, 1)
+        a = int(o0 * SR)
+        s[a:a + need] += np.stack([bed * gain * 0.95, np.roll(bed, 480) * gain * 1.05], 1)
+    # soft footfalls; the grass recording carries the texture
     for k, t in grid(3.2, 17.9, 1 / 3.2):
         close = 1.0 if any(a <= t < b for a, b in [(3.2, 6.2), (9.0, 11.6), (14.2, 17.0)]) else 0.35
         n = int(0.12 * SR)
         tt = np.arange(n) / SR
-        step = np.sin(2 * np.pi * 75 * tt) * np.exp(-tt * 40) + bp(rng.standard_normal(n), 1500, 6000) * np.exp(-tt * 45) * 0.5
-        add(s, step, t + rng.uniform(-0.01, 0.01), 0.11 * close, pan=-0.15 if k % 2 else 0.15)
-    for k, t in grid(3.3, 17.9, 0.62):
-        n = int(0.28 * SR)
-        tt = np.arange(n) / SR
-        br = bp(rng.standard_normal(n), 500, 2200) * np.sin(np.pi * tt / tt[-1]) ** 2
-        add(s, br, t, 0.02 + 0.03 * (t - 3.3) / 14.6)
-    for k, t in grid(17.9, 21.0, 0.36):   # panting at the top
-        n = int(0.25 * SR)
-        tt = np.arange(n) / SR
-        add(s, bp(rng.standard_normal(n), 600, 2400) * np.sin(np.pi * tt / tt[-1]) ** 2, t, 0.06)
+        add(s, np.sin(2 * np.pi * 75 * tt) * np.exp(-tt * 40), t + rng.uniform(-0.01, 0.01), 0.09 * close,
+            pan=-0.15 if k % 2 else 0.15)
     # UI / transitions
-    add(s, A.tick(2200), 3.45, 0.12)
-    add(s, A.tick(2200), 9.2, 0.12)
-    add(s, A.whoosh(0.3, 1.2), 10.55, 0.2)          # strike-through on "TURBO"
-    add(s, A.impact(0.7), 11.75, 0.35)              # the first clear shout
-    add(s, A.tick(2200), 14.4, 0.12)
+    add(s, A.tick(2200), 3.45, 0.10)
+    add(s, A.tick(2200), 9.2, 0.10)
+    add(s, A.whoosh(0.3, 1.2), 10.25, 0.18)         # strike-through on "TURBO"
+    add_out(s, A.impact(0.7), 11.72, 0.3)           # the first clear shout
+    add(s, A.tick(2200), 14.4, 0.10)
     add(s, A.bell(84, 2.0), 17.4, 0.05)             # phone glows
     add(s, A.whoosh(0.4, 0.8), 18.65, 0.2)
     add(s, A.blip(91), 19.15, 0.18)                 # app card
     add(s, A.bell(89, 2.5), 19.3, 0.05)
-    add(s, A.impact(0.8), 21.0, 0.4)                # "Ahhh… Ibadan is Urbn!"
+    add(s, A.impact(0.6), 21.0, 0.3)                # "Ahhh… Ibadan is Urbn!"
     add(s, A.impact(0.6), 24.6, 0.3)                # end card
     for k, t in enumerate(np.arange(23.3, 23.8, 0.11)):
-        add(s, A.pop(79 + k * 2, 0.2), t, 0.05, pan=0.5)   # the chain from the city
+        add(s, A.pop(79 + k * 2, 0.2), t, 0.04, pan=0.5)   # the chain from the city
     return s
 
 
 def main():
     out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "mix.wav")
     m = music()
-    duck = np.ones(N)
-    fx = sfx(duck)
-    sm = int(0.08 * SR)
-    duck = np.convolve(duck, np.ones(sm) / sm, "same")
+    v = voices()
+    # duck the music under any voice
+    env = np.sqrt(np.convolve((v ** 2).sum(1), np.ones(4800) / 4800, "same"))
+    active = (env > 10 ** (-42 / 20)).astype(float)
+    sm = int(0.15 * SR)
+    duck = 1 - 0.72 * np.convolve(active, np.ones(sm) / sm, "same")
     m *= duck[:, None]
-    mix = m * 1.0 + fx
+    mix = m * 0.9 + sfx() + ambience() + v
     fo = int(0.8 * SR)
     mix[-fo:] *= np.linspace(1, 0, fo)[:, None]
     sf.write(out, mix.astype(np.float32), SR, subtype="FLOAT")
+    sf.write(out.replace(".wav", "_voices.wav"), v.astype(np.float32), SR, subtype="FLOAT")
     print("peak", np.abs(mix).max())
 
 

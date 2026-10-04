@@ -19,7 +19,26 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), "edit"))
 import render as R  # noqa: E402  (brand fonts, text, logo, phone mockup helpers)
 
 W, H, FPS = 1080, 1920, 30
-TOTAL = 28.5
+TOTAL = 28.5          # story time (tau)
+
+# Output time -> story time. Two beats are stretched so the real voice
+# performances fit: the slow, syllable-by-syllable clear shout, and the
+# runner's "Ahh… Ibadan is Urbn!". Everything else runs 1:1.
+WARP = [(0.0, 0.0), (11.6, 11.6), (15.3, 14.2), (22.1, 21.0), (25.3, 22.6), (31.2, 28.5)]
+TOTAL_OUT = WARP[-1][0]
+
+
+def tau(t_out):
+    return float(np.interp(t_out, [a for a, _ in WARP], [b for _, b in WARP]))
+
+
+def out_time(t_tau):
+    return float(np.interp(t_tau, [b for _, b in WARP], [a for a, _ in WARP]))
+
+
+# Shouter S3, syllable onsets (output time) measured from the recording
+S3_OUT = 11.75
+S3_SYL = [(0.08, "I-"), (0.82, "I-BA-"), (1.35, "I-BA-DAN"), (2.04, "I-BA-DAN IS"), (2.71, "IBADAN IS URBN!")]
 SS = 2  # supersampling for the vector world
 BLUE, WHITE, BLACK = R.BLUE, R.WHITE, R.BLACK
 M = R.M
@@ -301,8 +320,9 @@ def rings(d, cam, t, src, max_r=520):
 
 
 # --------------------------------------------------------------------------- overlays
-def shout_text(c, t, t0, t1, q, text_full):
-    """Shouter's line, top of frame: blurred/scrambled when unclear, crisp when clear."""
+def shout_text(c, t, t0, t1, q, text_full, syllables=None):
+    """Shouter's line, top of frame: blurred/scrambled when unclear, crisp when clear.
+    syllables: [(tau, text_so_far)] reveals the clear line in sync with the voice."""
     if not (t0 <= t < t1):
         return
     p = ease_out(prog(t, t0, 0.35))
@@ -313,11 +333,23 @@ def shout_text(c, t, t0, t1, q, text_full):
     else:
         txt = text_full
     size = 100 if q >= 0.8 else 96
-    img, pad = R.T(txt, size, WHITE, R.HEAD, -0.03, "URBN!" if q >= 0.8 else None, WHITE, BLUE if q >= 0.8 else None)
+    full, _ = R.T(txt, size, WHITE, R.HEAD, -0.03, "URBN!" if q >= 0.8 else None, WHITE, BLUE if q >= 0.8 else None)
+    img = full
+    if syllables:
+        cur = None
+        for ts, part in syllables:
+            if t >= ts:
+                cur = (ts, part)
+        if cur is None:
+            return
+        part = cur[1]
+        hl = "URBN!" if part.endswith("URBN!") else None
+        img, _ = R.T(part, size, WHITE, R.HEAD, -0.03, hl, WHITE, BLUE if hl else None)
+        p = ease_out(prog(t, cur[0], 0.12)) if cur[0] == syllables[0][0] else 1.0
     blur = (1 - q) * 9
     if blur > 0.5:
         img = img.filter(ImageFilter.GaussianBlur(blur))
-    x = (W - img.width) / 2
+    x = (W - full.width) / 2
     y = 370 + (1 - p) * 30
     shake = (1 - q) * 6 * math.sin(t * 40)
     # echoes
@@ -434,7 +466,8 @@ def scene(t, kind, s, e):
     return img
 
 
-def frame(t):
+def frame(t_out):
+    t = tau(t_out)
     for s, e, kind in SHOTS:
         if s <= t < e:
             break
@@ -451,11 +484,12 @@ def frame(t):
     shout_text(c, t, 0.7, 3.2, 0.08, "")
     runner_line(c, t, 3.45, 6.2, "Oga! Wetin you dey talk?!", "Bro! What are you saying?!")
     shout_text(c, t, 6.55, 9.0, 0.5, "")
-    runner_line(c, t, 9.2, 11.6, "Ibadan na… TURBO??", "Ibadan is… turbo??", strike="TURBO??", t_strike=10.6)
-    shout_text(c, t, 11.8, 14.2, 1.0, "IBADAN IS URBN!")
+    runner_line(c, t, 9.2, 11.6, "Ibadan na… TURBO??", "Ibadan is… turbo??", strike="TURBO??", t_strike=10.3)
+    shout_text(c, t, 11.7, 14.2, 1.0, "IBADAN IS URBN!",
+               syllables=[(tau(S3_OUT + dt), part) for dt, part in S3_SYL])
     runner_line(c, t, 14.4, 17.0, "Ibadan na URBAN?!", "Ibadan is urban?! Since when?!")
     if kind == "top":
-        R.put_text(c, "*huff* *huff*", M, 1290, 46, t, 17.3, (190, 196, 220), R.BODYM, 0)
+        runner_line(c, t, 17.1, 18.8, "Wait o… wait…", "(totally out of breath)")
     runner_line(c, t, 21.05, 22.6, "Ahhh… Ibadan is Urbn!", "Ahhh… Ibadan is Urbn!")
     shout_text(c, t, 22.75, 24.6, 1.0, "IBADAN IS URBN!")
     if kind == "wide_end" and t >= 23.3:  # the chain: someone in the city shouts it on
@@ -506,7 +540,7 @@ def main():
     enc = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}",
                             "-r", str(FPS), "-i", "-", "-c:v", "libx264", "-preset", "medium", "-crf", "17",
                             "-pix_fmt", "yuv420p", out], stdin=subprocess.PIPE)
-    for n in range(int(TOTAL * FPS)):
+    for n in range(int(TOTAL_OUT * FPS)):
         enc.stdin.write(frame(n / FPS).tobytes())
         if n % 90 == 0:
             print(f"  {n / FPS:5.1f}s", flush=True)
